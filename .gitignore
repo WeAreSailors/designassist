@@ -1,0 +1,16 @@
+# personal / generated
+memory/
+projects/*
+!projects/.gitkeep
+.env
+.venv/
+.cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
+.designassist/
+assets/user-fonts/
+assets/user-media/

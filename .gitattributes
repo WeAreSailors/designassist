@@ -1,0 +1,5 @@
+# Shared project memory is append-mostly: when two people add lines at the same place,
+# keep both instead of conflicting (the sync skill dedupes afterwards).
+.claude/_memory/facts.md merge=union
+.claude/_memory/decisions.md merge=union
+.claude/_memory/people.md merge=union

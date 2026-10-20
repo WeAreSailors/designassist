@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run da:*)",
+      "Bash(uv sync:*)",
+      "Read(projects/**)",
+      "Edit(projects/**)",
+      "Write(projects/**)",
+      "Edit(memory/**)",
+      "Write(memory/**)",
+      "Edit(~/.memory-os/memory/designassist/**)",
+      "Write(~/.memory-os/memory/designassist/**)",
+      "Read(~/.memory-os/memory/**)",
+      "Edit(.claude/_memory/**)",
+      "Write(.claude/_memory/**)",
+      "Bash(memory-os check:*)",
+      "Bash(memory-os status:*)",
+      "Bash(bash vendor/memory-os/bin/memory-os check:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/memory-os-check.sh\" 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/first-run-check.sh\" 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+# The global tier is PRIVATE. It never leaves the machine it was written on.
+# Everything else in this repo is the system: spec, templates, installer, CLI.
+/memory/
+
+.DS_Store

@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+# memory-os — two-tier memory for Claude Code.
+# Global tier = private, yours. Project tier = committed, shared with the team.
+set -euo pipefail
+
+# --- resolve our own location, following symlinks (we get linked into ~/.local/bin) ---
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [ "${src#/}" = "$src" ] && src="$dir/$src"
+done
+ROOT="$(cd -P "$(dirname "$src")/.." && pwd)"
+
+TPL_PROJECT="$ROOT/templates/project"
+STORE="$ROOT/memory"
+
+PROJECT_FILES="_index.md project.md focus.md facts.md decisions.md people.md"
+
+bold() { printf '\033[1m%s\033[0m\n' "$1"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
+
+# --- accounts -----------------------------------------------------------------
+# The user may run Claude Code from several accounts, switched by the `claude-accounts`
+# CLI, which exports CLAUDE_CONFIG_DIR. Its registry is the source of truth when present;
+# otherwise fall back to whatever config dirs exist on disk, so memory-os works standalone.
+REGISTRY="$HOME/.claude-accounts/profiles.json"
+
+account_rows() { # emits: key <TAB> label <TAB> dir
+  if [ -f "$REGISTRY" ] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$REGISTRY" "$HOME" <<'PY'
+import json, os, sys
+reg, home = sys.argv[1], sys.argv[2]
+try:
+    profiles = json.load(open(reg)).get("profiles", [])
+except Exception:
+    profiles = []
+for p in profiles:
+    d = p.get("dir", "")
+    d = os.path.join(home, ".claude") if d == "DEFAULT" else os.path.expanduser(d)
+    print("\t".join([p.get("key", ""), p.get("label", "") or p.get("key", ""), d]))
+PY
+  else
+    local d n k
+    for d in "$HOME"/.claude "$HOME"/.claude-*; do
+      [ -d "$d" ] || continue
+      n="$(basename "$d")"
+      [ "$n" = ".claude-accounts" ] && continue
+      k="${n#.claude-}"; [ "$k" = ".claude" ] && k="personal"
+      printf '%s\t%s\t%s\n' "$k" "$k" "$d"
+    done
+  fi
+}
+
+# Directories that look like config dirs but aren't in the registry.
+unregistered_dirs() {
+  local known d n
+  known="$(account_rows | cut -f3)"
+  for d in "$HOME"/.claude "$HOME"/.claude-*; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    [ "$n" = ".claude-accounts" ] && continue
+    printf '%s\n' "$known" | grep -qxF "$d" || printf '%s\n' "$d"
+  done
+}
+
+active_dir() { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; }
+
+# key<TAB>label for a directory, or "unknown<TAB>unknown"
+account_for_dir() {
+  local target="$1" key label dir
+  while IFS="$(printf '\t')" read -r key label dir; do
+    [ "$dir" = "$target" ] && { printf '%s\t%s\n' "$key" "$label"; return 0; }
+  done <<EOF
+$(account_rows)
+EOF
+  printf 'unknown\tunknown\n'
+}
+
+# ---------------------------------------------------------------- init
+cmd_init() {
+  local target="." hook=1 a
+  for a in "$@"; do
+    case "$a" in
+      --no-hook) hook=0 ;;
+      -*) echo "unknown flag: $a" >&2; exit 1 ;;
+      *) target="$a" ;;
+    esac
+  done
+  [ -d "$target" ] || { echo "not a directory: $target" >&2; exit 1; }
+  target="$(cd "$target" && pwd)"
+
+  bold "memory-os init → $target"
+  git -C "$target" rev-parse --git-dir >/dev/null 2>&1 \
+    || warn "not a git repo — the project tier is meant to be committed"
+
+  mkdir -p "$target/.claude/_memory"
+  local created=0 kept=0 f
+  for f in $PROJECT_FILES; do
+    if [ -e "$target/.claude/_memory/$f" ]; then kept=$((kept+1))
+    else cp "$TPL_PROJECT/$f" "$target/.claude/_memory/$f"; created=$((created+1)); fi
+  done
+  ok "$created file(s) created, $kept left untouched in .claude/_memory/"
+
+  if [ -f "$target/CLAUDE.md" ] && grep -q "memory-os" "$target/CLAUDE.md"; then
+    ok "CLAUDE.md already points at memory-os"
+  else
+    [ -f "$target/CLAUDE.md" ] && printf '\n' >> "$target/CLAUDE.md"
+    cat "$TPL_PROJECT/POINTER.md" >> "$target/CLAUDE.md"
+    ok "pointer block appended to CLAUDE.md"
+  fi
+
+  [ "$hook" -eq 1 ] && install_hook "$target"
+
+  echo
+  echo "Next: fill .claude/_memory/project.md — it orients every other answer."
+  echo "Keep it shareable: no personal emails, no /Users/<you>/ paths, no logins."
+}
+
+# Committed SessionStart hook: greets a contributor whose machine has no memory-os.
+install_hook() {
+  local target="$1"
+  cp "$TPL_PROJECT/memory-os-check.sh" "$target/.claude/memory-os-check.sh"
+  chmod +x "$target/.claude/memory-os-check.sh"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 not found — merge $TPL_PROJECT/settings.hooks.json into"
+    warn ".claude/settings.json by hand to enable the session-start notice"
+    return 0
+  fi
+
+  python3 - "$target/.claude/settings.json" "$TPL_PROJECT/settings.hooks.json" <<'PY'
+import json, os, sys
+dst, frag = sys.argv[1], sys.argv[2]
+new = json.load(open(frag))["hooks"]["SessionStart"][0]
+
+cfg = {}
+if os.path.exists(dst):
+    try:
+        cfg = json.load(open(dst))
+    except json.JSONDecodeError:
+        print("  ! .claude/settings.json is not valid JSON — left alone, hook NOT added")
+        raise SystemExit(0)
+
+entries = cfg.setdefault("hooks", {}).setdefault("SessionStart", [])
+if any("memory-os-check" in h.get("command", "")
+       for e in entries for h in e.get("hooks", [])):
+    print("  \033[32m✓\033[0m SessionStart hook already present")
+    raise SystemExit(0)
+
+entries.append(new)
+with open(dst, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print("  \033[32m✓\033[0m SessionStart hook added to .claude/settings.json")
+PY
+}
+
+# ---------------------------------------------------------------- check
+cmd_check() {
+  local target="${1:-.}"
+  target="$(cd "$target" && pwd)"
+  local mem="$target/.claude/_memory"
+  [ -d "$mem" ] || { echo "no project tier at $mem" >&2; exit 1; }
+
+  bold "memory-os check → $mem"
+  echo "Scanning the SHARED tier for things a coworker shouldn't read."
+  echo
+  local hits=0
+
+  # Template guidance spells out the very patterns we hunt for. Drop obvious placeholders
+  # so a freshly-initialised repo reports clean instead of flagging its own instructions.
+  local PLACEHOLDER='<(someone|you|your[a-z-]*|name|user|owner)>|example\.(com|org|net)|/Users/x/|C:\\+Users\\+x'
+
+  scan() { # label, grep-flags, pattern
+    local label="$1" flags="$2" pat="$3" out
+    out="$(grep -rn $flags -- "$pat" "$mem" 2>/dev/null | grep -vE "$PLACEHOLDER" || true)"
+    if [ -n "$out" ]; then
+      bad "$label"
+      printf '%s\n' "$out" | sed "s|^$mem/|      |" | cut -c1-160
+      echo
+      hits=$((hits+1))
+    fi
+  }
+
+  scan "email addresses"        "-E"  '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+  scan "absolute home paths"    "-E"  '(/Users/|/home/)[A-Za-z0-9._-]+|[A-Za-z]:\\Users\\'
+  scan "credential-shaped keys" "-E"  '(sk-[A-Za-z0-9]{10}|gh[pousr]_[A-Za-z0-9]{10}|github_pat_|xox[baprs]-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|eyJ[A-Za-z0-9_-]{25})'
+  scan "secret-ish assignments" "-iE" '(password|passwd|secret|api[_-]?key|access[_-]?token)[[:space:]]*[:=][[:space:]]*[^[:space:]]'
+
+  if [ "$hits" -eq 0 ]; then
+    ok "clean — nothing personal or credential-shaped found"
+    echo
+    echo "Judgment still required: org/team IDs, dashboard URLs and client names"
+    echo "don't match a pattern. Skim facts.md and people.md before sharing."
+  else
+    echo "$hits categor(y|ies) flagged. Not every hit is a leak — a public business"
+    echo "address or a publishable key is fine. Move what isn't to the global tier."
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------- link
+# Point one config dir at the store. Quiet on success unless $2 is "loud".
+link_one() {
+  local d="$1" loud="${2:-loud}" n
+  n="$(basename "$d")"
+  if [ -d "$d/memory-os" ] && [ ! -L "$d/memory-os" ]; then
+    [ "$loud" = loud ] && warn "$n/memory-os is a real directory — left alone, move it aside first"
+    return 1
+  fi
+  [ "$(readlink "$d/memory-os" 2>/dev/null)" = "$ROOT" ] && return 0
+  ln -sfn "$ROOT" "$d/memory-os" 2>/dev/null || return 1
+  return 0
+}
+
+cmd_link() {
+  local quiet=0
+  [ "${1:-}" = "--quiet" ] && quiet=1
+  [ "$quiet" -eq 0 ] && bold "memory-os link"
+
+  local key label dir linked=0
+  while IFS="$(printf '\t')" read -r key label dir; do
+    [ -n "$dir" ] || continue
+    if [ ! -d "$dir" ]; then
+      [ "$quiet" -eq 0 ] && warn "$key — registered but $dir does not exist"
+      continue
+    fi
+    if link_one "$dir" "$([ "$quiet" -eq 1 ] && echo quiet || echo loud)"; then
+      [ "$quiet" -eq 0 ] && ok "$key ($label) → $dir/memory-os"
+      linked=$((linked+1))
+    fi
+  done <<EOF
+$(account_rows)
+EOF
+
+  if [ "$quiet" -eq 0 ]; then
+    local u
+    u="$(unregistered_dirs)"
+    if [ -n "$u" ]; then
+      echo
+      warn "config dirs not in the claude-accounts registry (linked anyway):"
+      printf '%s\n' "$u" | while read -r d; do
+        [ -n "$d" ] && link_one "$d" quiet && echo "      $(basename "$d")"
+      done
+    fi
+    [ "$linked" -eq 0 ] && warn "no Claude config dirs found under $HOME"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------- session
+# Runs from each account's user-level SessionStart hook. Two jobs, both silent:
+# self-heal this account's symlink, and tell the model where its global memory is.
+# claude-accounts deliberately does NOT copy CLAUDE.md into a new account, so this
+# hook is what carries the memory pointer across accounts.
+cmd_session() {
+  local cfg key label acct
+  cfg="$(active_dir)"
+  [ -d "$cfg" ] && link_one "$cfg" quiet || true
+
+  acct="$(account_for_dir "$cfg")"
+  key="${acct%%$(printf '\t')*}"
+  label="${acct##*$(printf '\t')}"
+  # A dir that claude-accounts hasn't registered yet (or a standalone install).
+  [ "$key" = unknown ] && { key="$(basename "$cfg")"; label="not in the claude-accounts registry"; }
+
+  [ -f "$STORE/me.md" ] || exit 0   # nothing to point at yet
+
+  local ctx
+  ctx="memory-os global memory is available at $STORE/ (private, shared by every Claude \
+account on this machine). Read _index.md, me.md and preferences.md now, plus accounts.md \
+if the active account matters, and skim journal/log.md. Do not announce these reads — just \
+answer as if you already know the context. Active account: '$key' (label '$label'). Every \
+account here belongs to the SAME person; never infer their identity from the signed-in \
+login or the profile label — me.md is the only source of truth for who they are. If this \
+repo also has .claude/_memory/, that is the shared project tier: read it too, and never \
+write personal data into it."
+
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
+    "$(printf '%s' "$ctx" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'NR>1{printf "\\n"} {printf "%s", $0}')"
+  exit 0
+}
+
+# ---------------------------------------------------------------- accounts
+cmd_accounts() {
+  bold "memory-os accounts"
+  if [ -f "$REGISTRY" ]; then echo "registry: $REGISTRY"
+  else echo "registry: none — falling back to ~/.claude* on disk"; fi
+  echo "active:   $(active_dir)"
+  echo
+
+  local key label dir mark
+  while IFS="$(printf '\t')" read -r key label dir; do
+    [ -n "$dir" ] || continue
+    mark=" "; [ "$dir" = "$(active_dir)" ] && mark="→"
+    if [ ! -d "$dir" ]; then bad "$mark $key ($label) — $dir missing"
+    elif [ "$(readlink "$dir/memory-os" 2>/dev/null)" = "$ROOT" ]; then ok "$mark $key ($label)"
+    else bad "$mark $key ($label) — not linked, run: memory-os link"; fi
+  done <<EOF
+$(account_rows)
+EOF
+
+  local u
+  u="$(unregistered_dirs)"
+  [ -n "$u" ] && { echo; warn "on disk but not registered:"; printf '%s\n' "$u" | sed 's|^|      |'; }
+
+  [ -f "$STORE/accounts.md" ] && { echo; sync_accounts_md; }
+  return 0
+}
+
+# Rewrite the registry table inside memory/accounts.md, between the markers, keeping any
+# login/purpose the user typed. Everything outside the markers is left alone.
+sync_accounts_md() {
+  command -v python3 >/dev/null 2>&1 || { warn "python3 missing — accounts.md not synced"; return 0; }
+  # NB: `python3 -` takes its program on stdin, so the rows must come in as argv,
+  # not through a pipe — piping into a heredoc'd script silently yields no input.
+  local rows
+  rows="$(account_rows)"
+  python3 - "$STORE/accounts.md" "$rows" <<'PY'
+import sys
+path = sys.argv[1]
+rows = [l.split("\t") for l in sys.argv[2].splitlines() if l.strip()]
+text = open(path).read()
+
+START, END = "<!-- registry:start -->", "<!-- registry:end -->"
+if START not in text or END not in text:
+    print("  \033[33m!\033[0m accounts.md has no <!-- registry:start/end --> markers — not synced")
+    raise SystemExit(0)
+
+head, rest = text.split(START, 1)
+_, tail = rest.split(END, 1)
+
+# Preserve what was hand-written, keyed by account key.
+kept = {}
+for line in rest.split(END)[0].splitlines():
+    cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
+    if len(cells) >= 5 and cells[0].startswith("`"):
+        kept[cells[0].strip("`")] = (cells[3], cells[4])
+
+out = ["| key | label | `CLAUDE_CONFIG_DIR` | login | purpose |", "|---|---|---|---|---|"]
+for key, label, d in rows:
+    login, purpose = kept.get(key, ("", ""))
+    cell = "`" + d.replace(__import__("os").path.expanduser("~"), "~") + "`"
+    if key == "personal":
+        cell += " (DEFAULT — var unset)"
+    out.append(f"| `{key}` | {label} | {cell} | {login} | {purpose} |")
+
+new = head + START + "\n" + "\n".join(out) + "\n" + END + tail
+if new != text:
+    open(path, "w").write(new)
+    print("  \033[32m✓\033[0m accounts.md registry table synced")
+else:
+    print("  \033[32m✓\033[0m accounts.md already matches the registry")
+PY
+}
+
+# Install the user-level SessionStart hook into every account's settings.json.
+# claude-add copies settings.json into new accounts, so this propagates by itself.
+install_account_hook() {
+  command -v python3 >/dev/null 2>&1 || { warn "python3 missing — account hook not installed"; return 0; }
+  local key label dir
+  while IFS="$(printf '\t')" read -r key label dir; do
+    [ -d "$dir" ] || continue
+    python3 - "$dir/settings.json" "$key" <<'PY'
+import json, os, sys
+dst, key = sys.argv[1], sys.argv[2]
+CMD = '"$HOME/.memory-os/bin/memory-os" session 2>/dev/null || true'
+
+cfg = {}
+if os.path.exists(dst):
+    try:
+        cfg = json.load(open(dst))
+    except json.JSONDecodeError:
+        print(f"  \033[33m!\033[0m {key}: settings.json is not valid JSON — left alone")
+        raise SystemExit(0)
+
+entries = cfg.setdefault("hooks", {}).setdefault("SessionStart", [])
+if any("memory-os" in h.get("command", "") and "session" in h.get("command", "")
+       for e in entries for h in e.get("hooks", [])):
+    print(f"  \033[32m✓\033[0m {key}: already wired")
+    raise SystemExit(0)
+
+entries.append({"hooks": [{"type": "command", "command": CMD, "timeout": 10}]})
+with open(dst, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print(f"  \033[32m✓\033[0m {key}: SessionStart hook added")
+PY
+  done <<EOF
+$(account_rows)
+EOF
+}
+
+# Reverse of wire-accounts. Run this BEFORE deleting ~/.memory-os, or every session in
+# every account keeps firing a hook that points at a binary that no longer exists.
+remove_account_hook() {
+  command -v python3 >/dev/null 2>&1 || { warn "python3 missing — remove the hooks by hand"; return 0; }
+  local key label dir
+  while IFS="$(printf '\t')" read -r key label dir; do
+    [ -f "$dir/settings.json" ] || continue
+    python3 - "$dir/settings.json" "$key" <<'PY'
+import json, sys
+dst, key = sys.argv[1], sys.argv[2]
+try:
+    cfg = json.load(open(dst))
+except Exception:
+    print(f"  \033[33m!\033[0m {key}: settings.json unreadable — left alone")
+    raise SystemExit(0)
+
+hooks = cfg.get("hooks", {})
+before = hooks.get("SessionStart", [])
+after = [e for e in before
+         if not any("memory-os" in h.get("command", "") and "session" in h.get("command", "")
+                    for h in e.get("hooks", []))]
+if len(after) == len(before):
+    print(f"  \033[32m✓\033[0m {key}: nothing to remove")
+    raise SystemExit(0)
+
+if after:
+    hooks["SessionStart"] = after
+else:
+    hooks.pop("SessionStart", None)
+    if not hooks:
+        cfg.pop("hooks", None)
+with open(dst, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print(f"  \033[32m✓\033[0m {key}: hook removed")
+PY
+  done <<EOF
+$(account_rows)
+EOF
+}
+
+# ---------------------------------------------------------------- status
+cmd_status() {
+  bold "memory-os status"
+  echo "store:  $ROOT"
+  if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "remote: $(git -C "$ROOT" remote get-url origin 2>/dev/null || echo 'none')"
+  fi
+  echo
+  echo "global tier (private):"
+  if [ -d "$STORE" ]; then
+    local f
+    for f in "$STORE"/_index.md "$STORE"/me.md "$STORE"/preferences.md \
+             "$STORE"/accounts.md "$STORE"/journal/log.md; do
+      [ -f "$f" ] && ok "${f#$STORE/}" || bad "${f#$STORE/} missing"
+    done
+  else
+    bad "no memory/ yet — run install.sh"
+  fi
+  echo
+  local acct
+  acct="$(account_for_dir "$(active_dir)")"
+  echo "active account: ${acct%%$(printf '\t')*} ($(active_dir))"
+  echo "accounts seeing this store:"
+  local key label dir
+  while IFS="$(printf '\t')" read -r key label dir; do
+    [ -n "$dir" ] || continue
+    if [ ! -d "$dir" ]; then bad "$key — $dir missing"
+    elif [ "$(readlink "$dir/memory-os" 2>/dev/null)" = "$ROOT" ]; then ok "$key ($label)"
+    else bad "$key — not linked, run: memory-os link"; fi
+  done <<EOF
+$(account_rows)
+EOF
+  echo
+  echo "this directory:"
+  if [ -d ".claude/_memory" ]; then ok "project tier present ($(ls .claude/_memory | wc -l | tr -d ' ') files)"
+  else warn "no project tier — run: memory-os init"; fi
+}
+
+# ---------------------------------------------------------------- update
+cmd_update() {
+  bold "memory-os update"
+  git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git clone" >&2; exit 1; }
+  git -C "$ROOT" pull --ff-only
+  ok "system files updated — your memory/ was not touched (it is gitignored)"
+}
+
+usage() {
+  cat <<'EOF'
+memory-os — two-tier memory for Claude Code
+
+  memory-os init [dir]    add the shared project tier to a repo (default: .)
+                          --no-hook skips the session-start install notice
+  memory-os check [dir]   scan the project tier for personal data before sharing
+  memory-os accounts      list your Claude accounts and sync memory/accounts.md
+  memory-os link          symlink the store into every Claude account config dir
+  memory-os status        store location, active account, linked accounts, this repo
+  memory-os update        git pull the system files (never touches your memory)
+  memory-os wire-accounts add the SessionStart hook to every account's settings.json
+  memory-os unwire-accounts   remove it again (run before deleting ~/.memory-os)
+  memory-os session       hook payload: self-heal the link, point the model at memory
+
+Global tier  ~/.memory-os/memory/      private, never committed
+Project tier <repo>/.claude/_memory/   committed, read by the whole team
+EOF
+}
+
+case "${1:-}" in
+  init)     shift; cmd_init "$@" ;;
+  check)    shift; cmd_check "$@" ;;
+  accounts) shift; cmd_accounts "$@" ;;
+  session)  shift; cmd_session "$@" ;;
+  wire-accounts)   shift; bold "memory-os wire-accounts";   install_account_hook ;;
+  unwire-accounts) shift; bold "memory-os unwire-accounts"; remove_account_hook ;;
+  link)   shift; cmd_link "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  update) shift; cmd_update "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "unknown command: $1" >&2; echo >&2; usage >&2; exit 1 ;;
+esac

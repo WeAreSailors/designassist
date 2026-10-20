@@ -1,0 +1,7 @@
+# Keep line endings deterministic across machines.
+# A CRLF shebang (`#!/usr/bin/env bash\r`) is not a valid interpreter path, so a clone
+# made on Windows with core.autocrlf=true would break every script in this repo.
+* text=auto eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf

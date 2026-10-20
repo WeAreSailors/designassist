@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4  # only the Adobe-script tests (jsx run against mocks) need node
+        with:
+          node-version: 22
+
+      - name: python deps
+        run: uv sync
+
+      - name: doctor
+        run: uv run da doctor
+        continue-on-error: true  # no design memory or API keys in CI; doctor still prints the environment
+
+      - name: tests
+        run: uv run pytest -q -m "not network"
+
+      - name: shared memory has nothing personal
+        if: runner.os != 'Windows'
+        run: bash vendor/memory-os/bin/memory-os check
