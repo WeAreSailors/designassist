@@ -420,22 +420,25 @@ def highlight_runs(lay: "TextLayout") -> tuple[list, list]:
 
 
 def highlight_box(spec: dict, x: float, baseline: float, width: float, size: float, ref, runs, L) -> tuple:
-    """Box (x, y, w, h) behind one highlighted line or accent run. Cap height to baseline + 0.18 em by default,
-    grown to the ink of `runs` (pass every run sharing this highlight so all lines get the same height):
-    accents above capitals (Ã, É) and cedillas (Ç) stay inside the box instead of spilling onto the background.
+    """Box (x, y, w, h) behind one highlighted line or accent run, centred on the capitals (baseline to cap
+    height): whatever ink of `runs` pokes out of that band (accents above Ã/É, a Q tail, Ç, descenders) grows
+    the box by the same amount on both sides, so the words always sit in the middle of the box. Pass every run
+    sharing this highlight so all lines get the same height. Without runs the overhang is 0.18 em.
     pad: numbers are fractions of the font size, strings are lengths ("12px")."""
     pad = spec.get("pad", [0.25, 0.08])
     px = L(pad[0]) if isinstance(pad[0], str) else float(pad[0]) * size
     py = L(pad[1]) if isinstance(pad[1], str) else float(pad[1]) * size
     f = font(ref) if ref else None
-    above, below = ((f.cap / f.upem * size) if f else size * 0.7), size * 0.18
+    cap = (f.cap / f.upem * size) if f else size * 0.7
+    over = None
     for r in runs or ():
         for g in r.glyphs:
             ink = _ink_y(r.style.ref, g.gid)
-            if ink:
-                above = max(above, ink[1] * r.style.size)  # g.y is the line's baseline: ignored, runs span lines
-                below = max(below, -ink[0] * r.style.size)
-    top, bottom = baseline - above - py, baseline + below + py
+            if ink:  # g.y is the line's baseline: ignored, runs span lines
+                rc = cap * r.style.size / size
+                over = max(over or 0.0, ink[1] * r.style.size - rc, -ink[0] * r.style.size)
+    over = size * 0.18 if over is None else over
+    top, bottom = baseline - cap - over - py, baseline + over + py
     return x - px, top, width + 2 * px, bottom - top
 
 

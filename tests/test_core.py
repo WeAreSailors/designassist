@@ -237,3 +237,23 @@ def test_highlight_box_covers_accents_above_capitals(sample):
     hs = [T.highlight_box(hl, r.x, ln.baseline, r.width, r.style.size, r.style.ref, runs, L)[3]
           for ln in two.lines for r in ln.runs if r.style.highlight]
     assert len(hs) == 2 and abs(hs[0] - hs[1]) < 1e-6
+
+
+def test_highlight_box_centres_the_capitals(sample):
+    # "QUEM CUIDA?" sat high in its box: the box ran cap height to baseline + 0.18 em, so there was a sliver
+    # of colour above the letters and a thick band below (2026-10-21: "sempre centralizados no fundinho")
+    ctx, _ = _ctx(sample)
+    hl = {"color": "#B1C1DB", "pad": [0.14, 0.05]}
+    base = {"id": "t", "type": "text", "x": 0, "y": 0, "w": 1400, "size": 100, "font": "Montserrat", "weight": 900}
+    L = lambda v: float(v)  # noqa: E731
+    for text in ("QUEM CUIDA?", "SUBMISSÃO?", "MENDIGANDO", "CORAÇÃO"):
+        lay = T.layout({**base, "text": text, "highlight": hl}, ctx)
+        ln = lay.lines[0]
+        ref = ln.runs[0].style.ref
+        _, top, _, h = T.highlight_box(hl, ln.x, ln.baseline, ln.width, lay.size, ref, T.highlight_runs(lay)[0], L)
+        f = T.font(ref)
+        cap_top = ln.baseline - f.cap / f.upem * lay.size
+        above, below = cap_top - top, top + h - ln.baseline
+        assert abs(above - below) < 0.5, (text, above, below)  # capitals in the middle of the box
+        ink = T.ink_box(lay)
+        assert top <= ink[1] and top + h >= ink[3]  # accents, Q tail and Ç stay inside
