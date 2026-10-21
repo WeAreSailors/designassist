@@ -58,3 +58,22 @@ def test_affinity_document_stays_artboard_size_with_hi_res_bitmaps(sample, tmp_p
     assert p2["spec"]["docs"][0]["artboards"][0]["h"] == pytest.approx(3840)
     assert p2["layers"]["post/photo"]["ppu"] == pytest.approx(k)
     assert p2["spec"]["docs"][1]["units"] == "mm"  # print document untouched
+
+
+def test_output_dir_moves_deliverables_and_keeps_previews(sample, tmp_path):
+    # the user wants finished files on the Desktop, not inside projects/<p>/output (2026-10-21)
+    from designassist import render
+
+    ST.save("output_dir", str(tmp_path / "Desk"))
+    try:
+        assert sample.output_dir == tmp_path / "Desk" / "sample"
+        res = export(sample, ["png"], ["post"])
+        assert (tmp_path / "Desk" / "sample" / "post.png").exists(), res
+        render.render(sample, ["post"], sheet=False)
+        assert sample.dir.joinpath("output", "preview", "post.png").exists()  # previews stay with the project
+        assert not (tmp_path / "Desk" / "sample" / "preview").exists()
+    finally:
+        ST.save("output_dir", "")
+    assert sample.path("output", "x.png") == sample.dir / "output" / "x.png"
+    with pytest.raises(SystemExit):
+        ST.save("outptu_dir", "x")

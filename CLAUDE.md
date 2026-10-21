@@ -76,6 +76,10 @@ user brief + assets ──► you (Claude Code / Codex) ──► skills (recipe
   browser for `da web`, the Affinity AI connector): use the designassist-setup skill for that part before continuing.
 - Resolution: the user's `da settings` (`uv run da settings`) decides the size of every deliverable (`max` = the
   highest that stays sharp); never override it downwards. Previews (`da render`) stay 1x for looking.
+- Where deliverables land: `output/` in the skills means the project's deliverables folder. When the user's
+  `da settings` has `output_dir` (e.g. `~/Desktop/designassist`), exports, Affinity/Adobe files, boards and
+  packages go to `<output_dir>/<project>/` instead; previews stay in `projects/<p>/output/preview`. Give the
+  user the paths the commands print.
 - Editable files go to Affinity first (affinity skill: `da affinity open <p>`), unless the user asks for
   Illustrator/Photoshop.
 - Run tools as `uv run da <command>` from the repo root. Every command prints JSON; read it.

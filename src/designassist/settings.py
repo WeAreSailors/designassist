@@ -6,6 +6,10 @@ Stored in `<memory>/settings.json` (private, per user, outside the repo).
                                       so no photo in the piece is upscaled more than 1.25x (1x at least)
     da settings set resolution 4k     long side exactly 3840 px (2k = 2560, 8k = 7680)
     da settings set resolution 1x     artboard size (1080 x 1350 stays 1080 x 1350)
+    da settings set output_dir ~/Desktop/designassist
+                                      deliverables (exports, Affinity/Adobe files, boards, packages) go to
+                                      <output_dir>/<project>/; previews stay in projects/<p>/output/preview.
+                                      `da settings set output_dir ""` puts them back in projects/<p>/output
 
 resolution applies to px artboards in `da export` (png/jpg/webp/psd, the screen pdf) and to the bitmaps placed in
 Affinity documents. The Affinity document itself stays at the artboard size (vector; scale it on export there).
@@ -15,7 +19,7 @@ from __future__ import annotations
 
 from .project import memory_dir, read_json, write_json
 
-DEFAULTS = {"resolution": "1x"}
+DEFAULTS = {"resolution": "1x", "output_dir": ""}
 RESOLUTIONS = {"1x": None, "max": 3840, "2k": 2560, "4k": 3840, "8k": 7680}  # long side in px
 MAX_UPSCALE = 1.25  # photos: beyond this a bigger file only shows the blur
 
@@ -31,6 +35,8 @@ def load() -> dict:
 def save(key: str, value: str) -> dict:
     if key == "resolution" and value.lower() not in RESOLUTIONS:
         raise SystemExit(f"resolution: one of {', '.join(RESOLUTIONS)}")
+    if key not in DEFAULTS:
+        raise SystemExit(f"unknown setting {key}: one of {', '.join(DEFAULTS)}")
     data = read_json(path()) or {}
     data[key] = value.lower() if key == "resolution" else value
     path().parent.mkdir(parents=True, exist_ok=True)
@@ -77,14 +83,14 @@ def _photo_limit(ab: dict, ctx) -> float:
 
 
 def register(sub) -> None:
-    p = sub.add_parser("settings", help="user settings the tools obey (resolution: max | 1x | 2k | 4k | 8k)")
+    p = sub.add_parser("settings", help="user settings the tools obey (resolution: max | 1x | 2k | 4k | 8k; output_dir: folder for deliverables)")
     p.add_argument("action", nargs="?", choices=["show", "set"], default="show")
     p.add_argument("key", nargs="?")
     p.add_argument("value", nargs="?")
 
     def run(a):
         if a.action == "set":
-            if not (a.key and a.value):
+            if not a.key or a.value is None:
                 raise SystemExit("da settings set <key> <value>")
             data = save(a.key, a.value)
         else:

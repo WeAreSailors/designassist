@@ -6,6 +6,8 @@ projects/<name>/
   work/             everything derived: image cache, previews, generated/stock images, versions/
   design.json       the design, in designassist's own format (see design.py)
   output/           renders and deliverables: png/jpg/webp/svg/pdf, print PDFs, psd, Adobe scripts
+                    (`da settings set output_dir ~/Desktop/designassist` moves the deliverables to
+                    <output_dir>/<name>/; previews stay in output/preview here)
 """
 from __future__ import annotations
 
@@ -156,7 +158,17 @@ class Project:
         return self.dir.name
 
     def path(self, *parts: str) -> Path:
+        if parts and parts[0] == "output" and parts[1:2] != ("preview",):
+            return self.output_dir.joinpath(*parts[1:])
         return self.dir.joinpath(*parts)
+
+    @property
+    def output_dir(self) -> Path:
+        """Where deliverables go: <output_dir setting>/<name>/ when the user set one, else <project>/output."""
+        from . import settings as S
+
+        root = str(S.load().get("output_dir") or "").strip()
+        return Path(root).expanduser() / self.name if root else self.dir / "output"
 
     @property
     def settings(self) -> dict:
