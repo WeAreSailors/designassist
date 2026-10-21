@@ -165,6 +165,34 @@ def test_resize_post_to_story_and_print(sample, capsys):
     assert res["made"][1]["size"] == "90x50 mm"
 
 
+
+def test_resize_keeps_stacked_lines_and_cutout_framing():
+    """Square cover -> story: a headline set as one layer per line must stay a stacked block (the bottom
+    lines used to be pinned to the safe edge on top of each other), and a hand-placed cut-out bigger than
+    the canvas keeps its aspect instead of being stretched over the story (2026-10-21)."""
+    from designassist import resize as R
+
+    line = lambda i, y, size: {"id": f"h{i}", "type": "text", "text": "LINHA", "x": 70, "y": y, "w": 940,  # noqa: E731
+                               "h": size, "size": size, "align": "center", "valign": "middle", "role": "headline"}
+    src = {"id": "sq", "preset": "ig-square", "width": 1080, "height": 1080, "unit": "px", "dpi": 72,
+           "safe": [56, 56, 56, 56], "layers": [
+               {"id": "guest", "type": "image", "role": "photo", "src": "x.png", "fit": "fill",
+                "x": -772, "y": -209, "w": 2679, "h": 1507},
+               line(1, 638, 76), line(2, 734, 118), line(3, 873, 76),
+               {"id": "name", "type": "text", "text": "NOME", "x": 140, "y": 968, "w": 800, "size": 32,
+                "align": "center", "role": "body"}]}
+    story, _ = R.adapt(src, "ig-story", "st")
+    L = {l["id"]: l for l in story["layers"]}
+    g = L["guest"]
+    assert abs(g["w"] / g["h"] - 2679 / 1507) < 0.01  # aspect kept, not stretched to 1080x1920
+    assert g["w"] > 1080 and g["x"] < 0
+    top, right, bottom, left = story["safe"]
+    order = [L[k] for k in ("h1", "h2", "h3", "name")]
+    for a, b in zip(order, order[1:]):
+        assert b["y"] >= a["y"] + a["h"] - 0.5, (a["id"], b["id"])  # still stacked, no overlap
+    assert order[0]["y"] >= top and order[-1]["y"] + 32 * 1.2 <= 1920 - bottom + 0.5
+
+
 def test_batch_from_csv(sample, capsys):
     d = D.load(sample)
     post = D.artboard(d, "post")

@@ -3,6 +3,10 @@
 A first pass the model then reviews, not a final layout:
 - background/photo layers (role background|photo, anchor fill, or covering >= 90% of the canvas)
   re-cover the whole new canvas (images keep their focus point);
+- a photo placed by hand (a cut-out larger than the canvas, or fit fill/contain) keeps its aspect and
+  framing: it scales by sqrt(sx * sy) around the canvas centre instead of being stretched over it;
+- text layers stacked on top of each other (one layer per headline line) move as one block, so the
+  safe-zone nudge can't pile them onto the same edge;
 - every other top-level layer scales by min(sx, sy) and keeps its distance to its anchor
   (explicit `anchor`, else the nearest edge / centre on each axis);
 - text keeps its box (scaled) with autofit on, so longer lines shrink instead of overflowing;
@@ -53,6 +57,32 @@ def _is_background(l: dict, x, y, w, h, W, H) -> bool:
     if l.get("role") in ("background", "photo") or l.get("anchor") == "fill":
         return True
     return w * h >= 0.9 * W * H and x <= W * 0.05 and y <= H * 0.05
+
+
+def _is_placed_photo(l: dict, x, y, w, h, W, H) -> bool:
+    """A photo layer framed by hand: a cut-out PNG bigger than the canvas, or fit fill/contain."""
+    if l.get("type") != "image" or l.get("role") != "photo" or l.get("anchor") == "fill":
+        return False
+    tol = 0.01 * max(W, H)
+    return l.get("fit", "cover") != "cover" or x < -tol or y < -tol or x + w > W + tol or y + h > H + tol
+
+
+def _text_blocks(items: list[tuple[int, dict, tuple]], H: float) -> list[list[int]]:
+    """Group text layers that sit on top of each other (overlapping columns, vertical gap <= 6% of the
+    height) into blocks; every other layer is a block of its own. items = (index, layer, bbox)."""
+    blocks: list[list[int]] = []
+    texts = sorted((it for it in items if it[1].get("type") == "text"), key=lambda it: it[2][1])
+    for i, l, (x, y, w, h) in texts:
+        for b in blocks:
+            j, _, (bx, by, bw, bh) = next(it for it in items if it[0] == b[-1])
+            if x < bx + bw and bx < x + w and -0.01 * H <= y - (by + bh) <= 0.06 * H:
+                b.append(i)
+                break
+        else:
+            blocks.append([i])
+    seen = {i for b in blocks for i in b}
+    blocks += [[it[0]] for it in items if it[0] not in seen]
+    return blocks
 
 
 def _scale_layer(l: dict, r: float, unit: str, dpi: float) -> None:
@@ -113,9 +143,18 @@ def adapt(src: dict, preset: str, new_id: str) -> tuple[dict, list[str]]:
         safe = [D.length(ab["margin"], tu, tdpi)] * 4
     bleed = D.length(ab.get("bleed", 0), tu, tdpi)
     notes: list[str] = []
+    placed: list[tuple[int, dict, tuple]] = []  # anchored layers, positioned per block after the loop
     for l in src.get("layers", []):
         x, y, w, h = _bbox(l, unit, dpi)
         n = copy.deepcopy(l)
+        if _is_placed_photo(l, x, y, w, h, W, H):
+            s = (sx * sy) ** 0.5  # keeps its share of the canvas area, aspect untouched
+            _scale_layer(n, r, unit, dpi)
+            n.update(x=round(NW / 2 + (x - W / 2) * s, 3), y=round(NH / 2 + (y - H / 2) * s, 3),
+                     w=round(w * s, 3), h=round(h * s, 3))
+            notes.append(f"{l.get('id')}: placed photo kept its aspect; check the framing")
+            ab["layers"].append(n)
+            continue
         if _is_background(l, x, y, w, h, W, H):
             if n.get("type") == "group":
                 _scale_layer(n, r, unit, dpi)
@@ -134,48 +173,61 @@ def adapt(src: dict, preset: str, new_id: str) -> tuple[dict, list[str]]:
                 n.setdefault("fit", "cover")
             ab["layers"].append(_into_bleed(n, NW, NH, bleed))
             continue
-        anchor = l.get("anchor") or infer_anchor(x, y, w, h, W, H)
         _scale_layer(n, r, unit, dpi)
-        nx, ny, nw, nh = _bbox(n, tu, tdpi)
-        cx, cy = x + w / 2, y + h / 2
+        placed.append((len(ab["layers"]), l, (x, y, w, h)))
+        ab["layers"].append(n)
+    for block in _text_blocks(placed, H):
+        members = [it for it in placed if it[0] in block]
+        ux = min(b[0] for _, _, b in members)
+        uy = min(b[1] for _, _, b in members)
+        uw = max(b[0] + b[2] for _, _, b in members) - ux
+        uh = max(b[1] + b[3] for _, _, b in members) - uy
+        first = members[0][1]
+        anchor = first.get("anchor") or infer_anchor(ux, uy, uw, uh, W, H)
+        nw, nh = uw * r, uh * r
+        cx, cy = ux + uw / 2, uy + uh / 2
         if "left" in anchor:
-            px = x * r
+            px = ux * r
         elif "right" in anchor:
-            px = NW - (W - x - w) * r - nw
+            px = NW - (W - ux - uw) * r - nw
         elif anchor in ("top", "bottom"):  # keep the relative horizontal position
             px = cx / W * NW - nw / 2
         else:
             px = NW / 2 + (cx - W / 2) * r - nw / 2
         if anchor.startswith("top"):
-            py = y * r
+            py = uy * r
         elif anchor.startswith("bottom"):
-            py = NH - (H - y - h) * r - nh
+            py = NH - (H - uy - uh) * r - nh
         elif anchor in ("left", "right"):
             py = cy / H * NH - nh / 2
         else:
             py = NH / 2 + (cy - H / 2) * r - nh / 2
         # nudge into the safe zone (canvas when there is none)
-        keep_inside = l.get("type") in ("text", "svg", "icon") or l.get("role") in ("logo", "cta", "headline", "body")
+        keep_inside = any(l.get("type") in ("text", "svg", "icon") or l.get("role") in ("logo", "cta", "headline", "body")
+                          for _, l, _ in members)
         bx0, bx1, by0, by1 = (safe[3], NW - safe[1], safe[0], NH - safe[2]) if keep_inside else (0, NW, 0, NH)
         if keep_inside or px < 0 or py < 0 or px + nw > NW or py + nh > NH:
             npx = min(max(px, bx0), max(bx0, bx1 - nw))
             npy = min(max(py, by0), max(by0, by1 - nh))
             if keep_inside and (abs(npx - px) > 0.5 or abs(npy - py) > 0.5):
-                notes.append(f"{l.get('id')}: nudged into the safe zone")
+                notes.append(f"{', '.join(str(l.get('id')) for _, l, _ in members)}: nudged into the safe zone")
             px, py = npx, npy
-        if n.get("type") == "line":
-            dx, dy = px - nx, py - ny
-            n["x"], n["y"] = round(n["x"] + dx, 3), round(n["y"] + dy, 3)
-            n["x2"], n["y2"] = round(n["x2"] + dx, 3), round(n["y2"] + dy, 3)
-        else:
-            n["x"], n["y"] = round(px, 3), round(py, 3)
-        if n.get("type") == "text":
-            n["autofit"] = True
-            if not n.get("h"):
-                n["h"] = round(nh * (1.6 if sy > sx * 1.3 else 1.0), 3)  # taller canvas: room to wrap
-            if n.get("w") and sx > r * 1.3:  # wider canvas: let the text use the width
-                n["w"] = round(min(NW - safe[1] - n["x"], n["w"] * min(sx / r, 1.8)), 3)
-        ab["layers"].append(n)
+        for idx, l, (x, y, w, h) in members:
+            n = ab["layers"][idx]
+            mx, my = px + (x - ux) * r, py + (y - uy) * r
+            nx, ny, _, mh = _bbox(n, tu, tdpi)
+            if n.get("type") == "line":
+                dx, dy = mx - nx, my - ny
+                n["x"], n["y"] = round(n["x"] + dx, 3), round(n["y"] + dy, 3)
+                n["x2"], n["y2"] = round(n["x2"] + dx, 3), round(n["y2"] + dy, 3)
+            else:
+                n["x"], n["y"] = round(mx, 3), round(my, 3)
+            if n.get("type") == "text":
+                n["autofit"] = True
+                if not n.get("h"):  # a stacked line keeps its height: growing it would shift it off its neighbours
+                    n["h"] = round(mh * (1.6 if sy > sx * 1.3 and len(members) == 1 else 1.0), 3)
+                if n.get("w") and sx > r * 1.3:  # wider canvas: let the text use the width
+                    n["w"] = round(min(NW - safe[1] - n["x"], n["w"] * min(sx / r, 1.8)), 3)
     if abs(sx - sy) / max(sx, sy) > 0.25:
         notes.append(f"aspect changed a lot ({W:g}x{H:g} {unit} -> {NW:g}x{NH:g} {tu}): recompose, don't just accept the scale")
     return ab, notes
