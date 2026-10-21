@@ -15,6 +15,14 @@ from designassist import design as D
 from designassist import svgflat
 
 
+@pytest.fixture(autouse=True)
+def _no_real_desktop(tmp_path, monkeypatch):
+    """Builds stage bitmaps in ~/Desktop/designassist-affinity/ (Affinity's sandbox): keep tests off the
+    real Desktop, unless this is the live test that needs Affinity to see the files."""
+    if os.environ.get("DA_AFFINITY_LIVE") != "1":
+        monkeypatch.setattr(B.Path, "home", lambda: tmp_path / "home")
+
+
 @pytest.fixture
 def planned(sample, tmp_path):
     d = D.load(sample)
