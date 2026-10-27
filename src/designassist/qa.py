@@ -287,12 +287,19 @@ def qa(project: Project, artboards: list[str] | None = None, contrast: bool = Tr
                 continue
             live = t in ("text", "svg", "icon") or l.get("role") in LIVE_ROLES
             bg = _is_bg(l, box, W, H)
+            ex0, ex1 = x0, x1  # edges for safe/margin: text by its ink (an `optical` line starts left of its ink)
+            if t == "text" and live and not bg and (safe or margin is not None):
+                from . import text as T
+
+                ink = T.ink_box(T.layout(l, ctx, unit, dpi, ox, oy))
+                if ink:
+                    ex0, ex1 = ink[0], ink[2]
             if live and not bg and safe:
-                if x0 < safe[3] - 0.5 or y0 < safe[0] - 0.5 or x1 > W - safe[1] + 0.5 or y1 > H - safe[2] + 0.5:
+                if ex0 < safe[3] - 0.5 or y0 < safe[0] - 0.5 or ex1 > W - safe[1] + 0.5 or y1 > H - safe[2] + 0.5:
                     _issue(issues, "warn", aid, lid, "safe-zone",
                            "outside the safe zone (platform UI or cropping covers it)", "move it inside the safe zone")
             if live and not bg and margin is not None:
-                if x0 < margin - 0.01 or y0 < margin - 0.01 or x1 > W - margin + 0.01 or y1 > H - margin + 0.01:
+                if ex0 < margin - 0.01 or y0 < margin - 0.01 or ex1 > W - margin + 0.01 or y1 > H - margin + 0.01:
                     _issue(issues, "warn", aid, lid, "margin",
                            f"closer than {margin:g} {unit} to the trim: may be cut off", "keep text and logos inside the margin")
             if bleed > 0 and not live and t in ("rect", "image", "path", "ellipse"):

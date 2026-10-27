@@ -297,6 +297,24 @@ def test_qa_alignment_uses_text_ink_not_box(sample):
     assert not flagged, flagged
 
 
+def test_qa_safe_zone_uses_text_ink_for_optical_type(sample):
+    """An `optical` number whose ink starts on the safe edge has its pen origin left of it (side bearing):
+    it must not be flagged as outside the safe zone; text whose ink really crosses the edge still is."""
+    from designassist import design as D
+    from designassist import qa
+
+    d = D.load(sample)
+    ab = d["artboards"][0]
+    ab["layers"] += [
+        {"id": "num", "type": "text", "text": "01", "x": 60, "y": 200, "size": 500, "color": "$paper", "optical": True},
+        {"id": "out", "type": "text", "text": "01", "x": 30, "y": 800, "size": 200, "color": "$paper", "optical": True},
+    ]
+    D.save(sample, d)
+    found = {(i["layer"], i["check"]) for i in qa.qa(sample, ["post"], contrast=False)["issues"]}
+    assert ("num", "safe-zone") not in found
+    assert ("out", "safe-zone") in found
+
+
 def test_qa_contrast_ignores_film_grain(sample):
     """White text on a solid dark colour stays readable under grain; the specks must not fail it."""
     from designassist import design as D
