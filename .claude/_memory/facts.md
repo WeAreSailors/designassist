@@ -118,3 +118,4 @@
 - `da settings set output_dir <folder>` sends deliverables to `<folder>/<project>/`: `Project.path("output", ...)` resolves there for everything except `output/preview` (previews stay in the project). Unset = `projects/<p>/output` as before (2026-10-21).
 - tests/test_affinity.py staged bitmaps in the real `~/Desktop/designassist-affinity/sample/` (Affinity's sandbox folder) until 2026-10-21; an autouse fixture now points `Path.home` at tmp unless DA_AFFINITY_LIVE=1.
 - `da qa` safe-zone/margin checks measure text by its INK edges: an `optical: true` line's pen origin sits left of its ink (side bearing), so a 560 px "01" with ink on the 80 px margin was flagged outside the 60 px safe zone (2026-10-23).
+- `setup.sh` installs Node whenever Homebrew is present; `DA_SKIP_NODE=1 ./setup.sh` skips it (only the Adobe .jsx tests need Node) (2026-10-28).

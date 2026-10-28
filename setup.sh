@@ -10,8 +10,8 @@ if ! have uv; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
-# node is optional: only the Adobe-script tests run .jsx against mocks with it
-if ! have node; then
+# node is optional: only the Adobe-script tests run .jsx against mocks with it (DA_SKIP_NODE=1 skips it)
+if ! have node && [[ "${DA_SKIP_NODE:-0}" != "1" ]]; then
   if have brew; then brew install node || true
   else echo "node not found (optional: only needed to run the Adobe-script tests)"; fi
 fi

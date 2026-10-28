@@ -18,7 +18,8 @@ After a skip or a partial setup, still do what the user asked.
 3-5 lines: ready / missing.
 
 ## 1. System dependencies (ask before installing)
-- macOS/Linux: `./setup.sh` (uv, then Python deps; Node only if they want to run the Adobe script tests).
+- macOS/Linux: `./setup.sh` (uv, then Python deps; it also installs Node via Homebrew when brew exists:
+  `DA_SKIP_NODE=1 ./setup.sh` when they don't want it; Node only runs the Adobe script tests).
 - Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1` (winget: uv). A NEW terminal may be needed
   for PATH.
 Re-run `uv run da doctor` until required rows are ok.
